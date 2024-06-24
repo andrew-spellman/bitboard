@@ -1,14 +1,14 @@
 use crate::position::Position;
 
-#[derive(Default, Clone, Copy, PartialEq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub enum Player {
-    #[default]
     Black,
+    #[default]
     White,
 }
 
 impl Player {
-    fn other(&self) -> Player {
+    fn other(&self) -> Self {
         match self {
             Player::Black => Player::White,
             Player::White => Player::Black,
@@ -16,6 +16,7 @@ impl Player {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum Piece {
     Pawn(Player),
     Knight(Player),
@@ -58,7 +59,7 @@ impl Piece {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone, Copy)]
 pub struct Board {
     black_pawn: u64,
     white_pawn: u64,
@@ -181,6 +182,25 @@ impl Board {
         }
     }
 
+    fn bitboard<'a>(&'a mut self, piece: Piece) -> &'a mut u64 {
+        use Piece::*;
+        use Player::*;
+        match piece {
+            Pawn(Black) => &mut self.black_pawn,
+            Pawn(White) => &mut self.white_pawn,
+            Knight(Black) => &mut self.black_knight,
+            Knight(White) => &mut self.white_knight,
+            Bishop(Black) => &mut self.black_bishop,
+            Bishop(White) => &mut self.white_bishop,
+            Rook(Black) => &mut self.black_rook,
+            Rook(White) => &mut self.white_rook,
+            Queen(Black) => &mut self.black_queen,
+            Queen(White) => &mut self.white_queen,
+            King(Black) => &mut self.black_king,
+            King(White) => &mut self.white_king,
+        }
+    }
+
     pub fn to_fen(&self) -> String {
         let mut fen = String::new();
         for rank in (0..8).rev() {
@@ -273,76 +293,12 @@ impl Board {
         })
     }
 
-    fn pseudo_legal_rook_moves<'a>(
-        &'a self,
-        player: Player,
-        p: Position,
-    ) -> impl Iterator<Item = Position> + 'a {
-        self.positions_by_delta(player, p, -1, 0)
-            .chain(self.positions_by_delta(player, p, 1, 0))
-            .chain(self.positions_by_delta(player, p, 0, -1))
-            .chain(self.positions_by_delta(player, p, 0, 1))
-    }
-
-    fn pseudo_legal_bishop_moves<'a>(
-        &'a self,
-        player: Player,
-        p: Position,
-    ) -> impl Iterator<Item = Position> + 'a {
-        self.positions_by_delta(player, p, -1, -1)
-            .chain(self.positions_by_delta(player, p, 1, -1))
-            .chain(self.positions_by_delta(player, p, -1, 1))
-            .chain(self.positions_by_delta(player, p, 1, 1))
-    }
-
-    fn pseudo_legal_knight_moves<'a>(
-        &'a self,
-        player: Player,
-        p: Position,
-    ) -> impl Iterator<Item = Position> + 'a {
-        self.try_delta_from_position(player, p, -1, -2)
-            .into_iter()
-            .chain(self.try_delta_from_position(player, p, 1, -2))
-            .chain(self.try_delta_from_position(player, p, -2, -1))
-            .chain(self.try_delta_from_position(player, p, 2, -1))
-            .chain(self.try_delta_from_position(player, p, -2, 1))
-            .chain(self.try_delta_from_position(player, p, 2, 1))
-            .chain(self.try_delta_from_position(player, p, -1, 2))
-            .chain(self.try_delta_from_position(player, p, 1, 2))
-    }
-
-    fn pseudo_legal_queen_moves<'a>(
-        &'a self,
-        player: Player,
-        p: Position,
-    ) -> impl Iterator<Item = Position> + 'a {
-        self.pseudo_legal_rook_moves(player, p)
-            .chain(self.pseudo_legal_bishop_moves(player, p))
-    }
-
-    fn pseudo_legal_king_moves<'a>(
-        &'a self,
-        player: Player,
-        p: Position,
-    ) -> impl Iterator<Item = Position> + 'a {
-        self.try_delta_from_position(player, p, -1, -1)
-            .into_iter()
-            .chain(self.try_delta_from_position(player, p, 0, -1))
-            .chain(self.try_delta_from_position(player, p, 1, -1))
-            .chain(self.try_delta_from_position(player, p, -1, 0))
-            .chain(self.try_delta_from_position(player, p, 0, 0))
-            .chain(self.try_delta_from_position(player, p, 1, 0))
-            .chain(self.try_delta_from_position(player, p, -1, 1))
-            .chain(self.try_delta_from_position(player, p, 0, 1))
-            .chain(self.try_delta_from_position(player, p, 1, 1))
-    }
-
     fn pseudo_legal_pawn_moves<'a>(
         &'a self,
         player: Player,
         p: Position,
     ) -> impl Iterator<Item = Position> + 'a {
-        let forward: isize = match player {
+        let forward = match player {
             Player::Black => -1,
             Player::White => 1,
         };
@@ -362,12 +318,138 @@ impl Board {
             self.piece_at(right)
                 .is_some_and(|right_piece| right_piece.player() == player.other())
         });
+        let en_passant = self.en_passant.filter(|&en_passant| {
+            let (delta_file, delta_rank) = en_passant - p;
+            delta_rank == forward && delta_file.abs() == 1
+        });
         first
             .into_iter()
             .chain(second)
             .chain(left)
             .chain(right)
-            .chain(self.en_passant)
+            .chain(en_passant)
+    }
+
+    fn pseudo_legal_knight_moves<'a>(
+        &'a self,
+        player: Player,
+        p: Position,
+    ) -> impl Iterator<Item = Position> + 'a {
+        self.try_delta_from_position(player, p, -1, -2)
+            .into_iter()
+            .chain(self.try_delta_from_position(player, p, 1, -2))
+            .chain(self.try_delta_from_position(player, p, -2, -1))
+            .chain(self.try_delta_from_position(player, p, 2, -1))
+            .chain(self.try_delta_from_position(player, p, -2, 1))
+            .chain(self.try_delta_from_position(player, p, 2, 1))
+            .chain(self.try_delta_from_position(player, p, -1, 2))
+            .chain(self.try_delta_from_position(player, p, 1, 2))
+    }
+
+    fn pseudo_legal_bishop_moves<'a>(
+        &'a self,
+        player: Player,
+        p: Position,
+    ) -> impl Iterator<Item = Position> + 'a {
+        self.positions_by_delta(player, p, -1, -1)
+            .chain(self.positions_by_delta(player, p, 1, -1))
+            .chain(self.positions_by_delta(player, p, -1, 1))
+            .chain(self.positions_by_delta(player, p, 1, 1))
+    }
+
+    fn pseudo_legal_rook_moves<'a>(
+        &'a self,
+        player: Player,
+        p: Position,
+    ) -> impl Iterator<Item = Position> + 'a {
+        self.positions_by_delta(player, p, -1, 0)
+            .chain(self.positions_by_delta(player, p, 1, 0))
+            .chain(self.positions_by_delta(player, p, 0, -1))
+            .chain(self.positions_by_delta(player, p, 0, 1))
+    }
+
+    fn pseudo_legal_king_moves<'a>(
+        &'a self,
+        player: Player,
+        p: Position,
+    ) -> impl Iterator<Item = Position> + 'a {
+        self.try_delta_from_position(player, p, -1, -1)
+            .into_iter()
+            .chain(self.try_delta_from_position(player, p, 0, -1))
+            .chain(self.try_delta_from_position(player, p, 1, -1))
+            .chain(self.try_delta_from_position(player, p, -1, 0))
+            .chain(self.try_delta_from_position(player, p, 0, 0))
+            .chain(self.try_delta_from_position(player, p, 1, 0))
+            .chain(self.try_delta_from_position(player, p, -1, 1))
+            .chain(self.try_delta_from_position(player, p, 0, 1))
+            .chain(self.try_delta_from_position(player, p, 1, 1))
+    }
+
+    fn pseudo_legal_castling_moves<'a>(
+        &'a self,
+        player: Player,
+    ) -> impl Iterator<Item = Position> + 'a {
+        use Player::*;
+        match player {
+            Black => self
+                .black_castle_queenside
+                .then(|| {
+                    (self
+                        .piece_at(Position::from_algebraic("d8").unwrap())
+                        .is_none()
+                        && self
+                            .piece_at(Position::from_algebraic("c8").unwrap())
+                            .is_none()
+                        && self
+                            .piece_at(Position::from_algebraic("b8").unwrap())
+                            .is_none())
+                    .then(|| Position::from_algebraic("c8").unwrap())
+                })
+                .flatten()
+                .into_iter()
+                .chain({
+                    self.black_castle_kingside
+                        .then(|| {
+                            (self
+                                .piece_at(Position::from_algebraic("f8").unwrap())
+                                .is_none()
+                                && self
+                                    .piece_at(Position::from_algebraic("g8").unwrap())
+                                    .is_none())
+                            .then(|| Position::from_algebraic("e8").unwrap())
+                        })
+                        .flatten()
+                }),
+            White => self
+                .white_castle_queenside
+                .then(|| {
+                    (self
+                        .piece_at(Position::from_algebraic("d1").unwrap())
+                        .is_none()
+                        && self
+                            .piece_at(Position::from_algebraic("c1").unwrap())
+                            .is_none()
+                        && self
+                            .piece_at(Position::from_algebraic("b1").unwrap())
+                            .is_none())
+                    .then(|| Position::from_algebraic("c1").unwrap())
+                })
+                .flatten()
+                .into_iter()
+                .chain({
+                    self.white_castle_kingside
+                        .then(|| {
+                            (self
+                                .piece_at(Position::from_algebraic("f1").unwrap())
+                                .is_none()
+                                && self
+                                    .piece_at(Position::from_algebraic("g1").unwrap())
+                                    .is_none())
+                            .then(|| Position::from_algebraic("e1").unwrap())
+                        })
+                        .flatten()
+                }),
+        }
     }
 
     fn is_in_check(&self, player: Player) -> bool {
@@ -419,15 +501,44 @@ impl Board {
             .is_some()
     }
 
-    fn moves(&self) -> Vec<Board> {
+    fn moves<'a>(&'a self) -> impl Iterator<Item = Board> + 'a {
         use Piece::*;
-        for index in 0..64 {
-            match self.piece_at(Position::from_index(index).unwrap()) {
-                Pawn(player) if player == turn => (),
-                Knight()                
-            }
-        }
-        vec![]
+        (0..64)
+            .into_iter()
+            .filter_map(|i| {
+                let origin = Position::from_index(i).unwrap();
+                self.piece_at(origin)
+                    .filter(|piece| piece.player() == self.turn)
+                    .map(|piece| (piece, origin))
+            })
+            .map(|(piece, origin)| {
+                match piece {
+                    Pawn(_) => Box::new(self.pseudo_legal_pawn_moves(self.turn, origin))
+                        as Box<dyn Iterator<Item = Position>>,
+                    Knight(_) => Box::new(self.pseudo_legal_knight_moves(self.turn, origin)),
+                    Bishop(_) => Box::new(self.pseudo_legal_bishop_moves(self.turn, origin)),
+                    Rook(_) => Box::new(self.pseudo_legal_rook_moves(self.turn, origin)),
+                    Queen(_) => Box::new(
+                        self.pseudo_legal_rook_moves(self.turn, origin)
+                            .chain(self.pseudo_legal_bishop_moves(self.turn, origin)),
+                    ),
+                    King(_) => Box::new(self.pseudo_legal_king_moves(self.turn, origin)),
+                }
+                .map(move |destination| (piece, origin, destination))
+            })
+            .flatten()
+            .map(|(piece, origin, destination)| {
+                let mut b = *self;
+                *b.bitboard(piece) &= !origin.to_one_hot();
+                if let Some(taken) = b.piece_at(destination) {
+                    assert_eq!(taken.player(), b.turn.other());
+                    *b.bitboard(taken) &= !destination.to_one_hot();
+                }
+                *b.bitboard(piece) |= destination.to_one_hot();
+                b.turn = b.turn.other();
+                b
+            })
+            .filter(|b| b.is_in_check(b.turn.other()))
     }
 }
 
@@ -450,11 +561,9 @@ mod tests {
         let b =
             Board::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1").unwrap();
         assert!(!b.is_in_check(Player::White));
-        b.pseudo_legal_queen_moves(Player::White, Position::from_algebraic("c6").unwrap())
-            .for_each(|p| {
-                let a = p.to_algebraic();
-                println!("{}{}", a.0, a.1)
-            });
+        b.moves().for_each(|b| {
+            println!("{}", b.to_fen());
+        });
         panic!();
     }
 }

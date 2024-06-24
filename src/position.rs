@@ -10,6 +10,21 @@ impl fmt::Debug for Position {
     }
 }
 
+impl std::ops::Sub for Position {
+    type Output = (isize, isize);
+    fn sub(self, rhs: Self) -> Self::Output {
+        let (lhs_file, lhs_rank) = {
+            let (file, rank) = self.to_file_rank();
+            (file as isize, rank as isize)
+        };
+        let (rhs_file, rhs_rank) = {
+            let (file, rank) = rhs.to_file_rank();
+            (file as isize, rank as isize)
+        };
+        (lhs_file - rhs_file, lhs_rank - rhs_rank)
+    }
+}
+
 impl Position {
     pub fn from_index(pos: usize) -> Option<Self> {
         match pos {
