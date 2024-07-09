@@ -1,7 +1,7 @@
 use crate::position::Position;
 
 #[derive(Clone, Copy, PartialEq)]
-pub enum Player {
+enum Player {
     Black,
     White,
 }
@@ -79,6 +79,23 @@ impl Piece {
             Rook(player) => *player,
             Queen(player) => *player,
             King(player) => *player,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct Move {
+    piece: Piece,
+    origin: Position,
+    destination: Position,
+}
+
+impl Move {
+    fn new(piece: Piece, origin: Position, destination: Position) -> Self {
+        Self {
+            piece,
+            origin,
+            destination,
         }
     }
 }
@@ -185,6 +202,7 @@ impl Board {
             fullmove_count: 1,
         }
     }
+
     fn from_fen(fen: &str) -> Option<Self> {
         let mut b = Self::empty();
         let mut split = fen.split(" ");
@@ -303,8 +321,8 @@ impl Board {
         }
     }
 
-    pub fn to_fen(&self) -> String {
-        let mut fen = String::new();
+    fn to_fen(&self) -> String {
+        let mut fen = String::with_capacity(87);
         for rank in (0..8).rev() {
             let mut consecutive_empty = 0u32;
             for file in 0..8 {
@@ -566,6 +584,27 @@ impl Board {
             })
     }
 
+    fn pseudo_legal_moves<'a>(
+        &'a self,
+        player: Player,
+        piece: Piece,
+        p: Position,
+    ) -> impl Iterator<Item = Position> + 'a {
+        use Piece::*;
+        match piece {
+            Pawn(_) => Box::new(self.pseudo_legal_pawn_moves(player, p))
+                as Box<dyn Iterator<Item = Position>>,
+            Knight(_) => Box::new(self.pseudo_legal_knight_moves(player, p)),
+            Bishop(_) => Box::new(self.pseudo_legal_bishop_moves(player, p)),
+            Rook(_) => Box::new(self.pseudo_legal_rook_moves(player, p)),
+            Queen(_) => Box::new(
+                self.pseudo_legal_rook_moves(player, p)
+                    .chain(self.pseudo_legal_bishop_moves(player, p)),
+            ),
+            King(_) => Box::new(self.pseudo_legal_king_moves(player, p)),
+        }
+    }
+
     fn is_in_check(&self, player: Player) -> bool {
         use Piece::*;
         let king = Position::from_one_hot(match player {
@@ -623,9 +662,78 @@ impl Board {
         *self.bitboard(piece) |= p.to_one_hot();
     }
 
-    fn moves<'a>(&'a self) -> impl Iterator<Item = Board> + 'a {
+    fn try_pseudo_legal_move(&self, m: Move) -> Option<Board> {
         use Piece::*;
         use Player::*;
+
+        let mut b = *self;
+        let mut en_passant = None;
+
+        match m.piece {
+            Pawn(Black) if Some(m.destination) == b.en_passant => {
+                b.clear(Pawn(White), m.destination.moved_by(0, 1).unwrap());
+            }
+            Pawn(White) if Some(m.destination) == b.en_passant => {
+                b.clear(Pawn(Black), m.destination.moved_by(0, -1).unwrap());
+            }
+            Pawn(Black) if (m.destination - m.origin).1.abs() == 2 => {
+                en_passant = Some(m.destination.moved_by(0, 1).unwrap());
+            }
+            Pawn(White) if (m.destination - m.origin).1.abs() == 2 => {
+                en_passant = Some(m.destination.moved_by(0, -1).unwrap());
+            }
+            Rook(Black) if m.origin.to_file_rank().0 == 0 => b.black_castle_queenside = false,
+            Rook(White) if m.origin.to_file_rank().0 == 0 => b.black_castle_queenside = false,
+            Rook(Black) if m.origin.to_file_rank().0 == 7 => b.black_castle_kingside = false,
+            Rook(White) if m.origin.to_file_rank().0 == 7 => b.black_castle_kingside = false,
+            King(Black) if (m.destination - m.origin).0 == -2 => {
+                b.clear(Rook(Black), Position::from_file_rank(0, 7).unwrap());
+                b.clear(Rook(Black), Position::from_file_rank(3, 7).unwrap());
+            }
+            King(White) if (m.destination - m.origin).0 == -2 => {
+                b.clear(Rook(White), Position::from_file_rank(0, 0).unwrap());
+                b.clear(Rook(White), Position::from_file_rank(3, 0).unwrap());
+            }
+            King(Black) if (m.destination - m.origin).0 == 2 => {
+                b.clear(Rook(Black), Position::from_file_rank(7, 7).unwrap());
+                b.clear(Rook(Black), Position::from_file_rank(5, 7).unwrap());
+            }
+            King(White) if (m.destination - m.origin).0 == 2 => {
+                b.clear(Rook(White), Position::from_file_rank(7, 0).unwrap());
+                b.clear(Rook(White), Position::from_file_rank(5, 0).unwrap());
+            }
+            _ => (),
+        }
+
+        match m.piece {
+            King(Black) => {
+                b.black_castle_queenside = false;
+                b.black_castle_kingside = false;
+            }
+            King(White) => {
+                b.white_castle_queenside = false;
+                b.white_castle_kingside = false;
+            }
+            _ => (),
+        }
+
+        b.en_passant = en_passant;
+        b.clear(m.piece, m.origin);
+        if let Some(taken) = b.piece_at(m.destination) {
+            b.clear(taken, m.destination)
+        }
+        b.set(m.piece, m.destination);
+        if b.turn == Black {
+            b.fullmove_count += 1;
+        }
+        if b.is_in_check(b.turn) {
+            return None;
+        }
+        b.turn = b.turn.other();
+        Some(b)
+    }
+
+    fn moves<'a>(&'a self) -> impl Iterator<Item = (Move, Board)> + 'a {
         (0..64)
             .into_iter()
             .filter_map(|i| {
@@ -634,84 +742,11 @@ impl Board {
                     .filter(|piece| piece.player() == self.turn)
                     .map(|piece| (piece, origin))
             })
-            .map(|(piece, origin)| {
-                match piece {
-                    Pawn(_) => Box::new(self.pseudo_legal_pawn_moves(self.turn, origin))
-                        as Box<dyn Iterator<Item = Position>>,
-                    Knight(_) => Box::new(self.pseudo_legal_knight_moves(self.turn, origin)),
-                    Bishop(_) => Box::new(self.pseudo_legal_bishop_moves(self.turn, origin)),
-                    Rook(_) => Box::new(self.pseudo_legal_rook_moves(self.turn, origin)),
-                    Queen(_) => Box::new(
-                        self.pseudo_legal_rook_moves(self.turn, origin)
-                            .chain(self.pseudo_legal_bishop_moves(self.turn, origin)),
-                    ),
-                    King(_) => Box::new(self.pseudo_legal_king_moves(self.turn, origin)),
-                }
-                .map(move |destination| (piece, origin, destination))
+            .flat_map(|(piece, origin)| {
+                self.pseudo_legal_moves(self.turn, piece, origin)
+                    .map(move |destination| (Move::new(piece, origin, destination)))
+                    .flat_map(|m| self.try_pseudo_legal_move(m).map(|board| (m, board)))
             })
-            .flatten()
-            .map(|(piece, origin, destination)| {
-                let mut b = *self;
-                let mut en_passant = None;
-                match piece {
-                    Pawn(Black) if Some(destination) == self.en_passant => {
-                        b.clear(Pawn(White), destination.moved_by(0, 1).unwrap());
-                    }
-                    Pawn(White) if Some(destination) == self.en_passant => {
-                        b.clear(Pawn(Black), destination.moved_by(0, -1).unwrap());
-                    }
-                    Pawn(Black) if (destination - origin).1.abs() == 2 => {
-                        en_passant = Some(destination.moved_by(0, 1).unwrap());
-                    }
-                    Pawn(White) if (destination - origin).1.abs() == 2 => {
-                        en_passant = Some(destination.moved_by(0, -1).unwrap());
-                    }
-                    Rook(Black) if origin.to_file_rank().0 == 0 => b.black_castle_queenside = false,
-                    Rook(White) if origin.to_file_rank().0 == 0 => b.black_castle_queenside = false,
-                    Rook(Black) if origin.to_file_rank().0 == 7 => b.black_castle_kingside = false,
-                    Rook(White) if origin.to_file_rank().0 == 7 => b.black_castle_kingside = false,
-                    King(Black) if (destination - origin).0 == -2 => {
-                        b.clear(Rook(Black), Position::from_file_rank(0, 7).unwrap());
-                        b.clear(Rook(Black), Position::from_file_rank(3, 7).unwrap());
-                    }
-                    King(White) if (destination - origin).0 == -2 => {
-                        b.clear(Rook(White), Position::from_file_rank(0, 0).unwrap());
-                        b.clear(Rook(White), Position::from_file_rank(3, 0).unwrap());
-                    }
-                    King(Black) if (destination - origin).0 == 2 => {
-                        b.clear(Rook(Black), Position::from_file_rank(7, 7).unwrap());
-                        b.clear(Rook(Black), Position::from_file_rank(5, 7).unwrap());
-                    }
-                    King(White) if (destination - origin).0 == 2 => {
-                        b.clear(Rook(White), Position::from_file_rank(7, 0).unwrap());
-                        b.clear(Rook(White), Position::from_file_rank(5, 0).unwrap());
-                    }
-                    _ => (),
-                }
-                match piece {
-                    King(Black) => {
-                        b.black_castle_queenside = false;
-                        b.black_castle_kingside = false;
-                    }
-                    King(White) => {
-                        b.white_castle_queenside = false;
-                        b.white_castle_kingside = false;
-                    }
-                    _ => (),
-                }
-                b.en_passant = en_passant;
-                b.clear(piece, origin);
-                if let Some(taken) = b.piece_at(destination) {
-                    b.clear(taken, destination)
-                }
-                b.set(piece, destination);
-                if b.turn == Black {
-                    b.fullmove_count += 1;
-                }
-                b.turn = b.turn.other();
-                b
-            })
-            .filter(|b| !b.is_in_check(b.turn.other()))
     }
 }
 
@@ -747,10 +782,10 @@ mod tests {
         assert!(Board::from_fen("4k3/8/8/8/1p6/8/P7/4K3 w - - 0 1")
             .unwrap()
             .moves()
-            .find(|b| b.to_fen() == "4k3/8/8/8/Pp6/8/8/4K3 b - a3 0 1")
+            .find_map(|(_, b)| (b.to_fen() == "4k3/8/8/8/Pp6/8/8/4K3 b - a3 0 1").then(|| b))
             .unwrap()
             .moves()
-            .find(|b| b.to_fen() == "4k3/8/8/8/8/p7/8/4K3 w - - 0 2")
+            .find(|(_, b)| b.to_fen() == "4k3/8/8/8/8/p7/8/4K3 w - - 0 2")
             .is_some())
     }
 }
