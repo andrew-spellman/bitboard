@@ -93,6 +93,10 @@ impl Position {
         };
         Self::from_file_rank(new_file as usize, new_rank as usize)
     }
+
+    pub fn is_dark(&self) -> bool {
+        self.to_one_hot() & 0xAA55AA55AA55AA55 != 0
+    }
 }
 
 #[cfg(test)]
