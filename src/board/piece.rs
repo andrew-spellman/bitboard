@@ -1,6 +1,6 @@
 use crate::board::Player;
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Piece {
     Pawn(Player),
     Knight(Player),
