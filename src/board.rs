@@ -1,7 +1,5 @@
 mod piece;
 
-use std::process::Termination;
-
 use crate::board::piece::Piece;
 use crate::position::Position;
 
@@ -25,18 +23,40 @@ struct Move {
     piece: Piece,
     initial: Position,
     terminal: Position,
+    take: Option<Piece>,
     action: Option<Action>,
+}
+
+impl Move {
+    fn new(piece: Piece, initial: Position, terminal: Position) -> Self {
+        Self {
+            piece,
+            terminal,
+            initial,
+            take: None,
+            action: None,
+        }
+    }
+
+    fn with_take(mut self, taken: Option<Piece>) -> Self {
+        self.take = taken;
+        self
+    }
+
+    fn with_action(mut self, action: Option<Action>) -> Self {
+        self.action = action;
+        self
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Action {
-    Take(Piece, Position),
     Castle {
-        player: Player,
         initial: Position,
         terminal: Position,
     },
     DoubleStep(Position),
+    EnPassant(Position),
     Promote(Piece),
 }
 
@@ -71,7 +91,6 @@ pub struct Board {
     en_passant: Option<Position>,
     halfmove_clock: usize,
     fullmove_count: usize,
-    status: Status,
 }
 
 impl Default for Board {
@@ -97,7 +116,6 @@ impl Default for Board {
             en_passant: None,
             halfmove_clock: 0,
             fullmove_count: 1,
-            status: Status::Ongoing,
         }
     }
 }
@@ -151,7 +169,6 @@ impl Board {
             en_passant: None,
             halfmove_clock: 0,
             fullmove_count: 1,
-            status: Status::Ongoing,
         }
     }
 
@@ -461,18 +478,17 @@ impl Board {
             White => 1,
         };
 
-        let to_promotion = |terminal: Position| {
+        let to_move = |terminal| Move::new(piece, initial, terminal);
+
+        let try_take = |m: Move| m.with_take(self.piece_at(m.terminal));
+
+        let try_promotion = |m: Move| {
             let opposite_back_rank = match player {
                 Black => 0,
                 White => 7,
             };
-            if terminal.to_file_rank().1 == opposite_back_rank {
-                let promote_to = |piece: Piece| Move {
-                    piece,
-                    initial,
-                    terminal,
-                    action: Some(Action::Promote(piece)),
-                };
+            if m.terminal.to_file_rank().1 == opposite_back_rank {
+                let promote_to = |piece: Piece| m.with_action(Some(Action::Promote(piece)));
                 Box::new(
                     Some(promote_to(Knight(player)))
                         .into_iter()
@@ -481,15 +497,7 @@ impl Board {
                         .chain(Some(promote_to(Queen(player)))),
                 ) as Box<dyn Iterator<Item = Move>>
             } else {
-                Box::new(
-                    Some(Move {
-                        piece,
-                        initial,
-                        terminal,
-                        action: None,
-                    })
-                    .into_iter(),
-                )
+                Box::new(Some(m).into_iter())
             }
         };
 
@@ -499,7 +507,8 @@ impl Board {
         let first = p_first
             .filter(|&first| self.piece_at(first).is_none())
             .inspect(|_| first_successful = true)
-            .map(to_promotion)
+            .map(to_move)
+            .map(try_promotion)
             .unwrap_or(Box::new(None.into_iter()));
 
         let is_pawn_initial_rank = match player {
@@ -512,15 +521,11 @@ impl Board {
                 initial
                     .moved_by(0, 2 * forward)
                     .filter(|&second| self.piece_at(second).is_none())
-                    .map(|terminal| {
+                    .map(to_move)
+                    .map(|m| {
                         Box::new(
-                            Some(Move {
-                                piece,
-                                initial,
-                                terminal,
-                                action: Some(Action::DoubleStep(p_first.unwrap())),
-                            })
-                            .into_iter(),
+                            Some(m.with_action(Some(Action::DoubleStep(p_first.unwrap()))))
+                                .into_iter(),
                         )
                     })
             })
@@ -533,7 +538,9 @@ impl Board {
                 self.piece_at(left)
                     .is_some_and(|left_piece| left_piece.player() == player.other())
             })
-            .map(to_promotion)
+            .map(to_move)
+            .map(try_take)
+            .map(try_promotion)
             .unwrap_or(Box::new(None.into_iter()));
 
         let right = initial
@@ -542,7 +549,9 @@ impl Board {
                 self.piece_at(right)
                     .is_some_and(|right_piece| right_piece.player() == player.other())
             })
-            .map(to_promotion)
+            .map(to_move)
+            .map(try_take)
+            .map(try_promotion)
             .unwrap_or(Box::new(None.into_iter()));
 
         let en_passant = Box::new(
@@ -551,14 +560,11 @@ impl Board {
                     let (delta_file, delta_rank) = en_passant - initial;
                     delta_rank == forward && delta_file.abs() == 1
                 })
-                .map(|terminal| Move {
-                    piece: Piece::Pawn(player),
-                    initial,
-                    terminal,
-                    action: Some(Action::Take(
-                        Piece::Pawn(player.other()),
-                        terminal.moved_by(0, -1 * forward).unwrap(),
-                    )),
+                .map(to_move)
+                .map(|m| {
+                    m.with_action(Some(Action::EnPassant(
+                        m.terminal.moved_by(0, -1 * forward).unwrap(),
+                    )))
                 })
                 .into_iter(),
         );
@@ -585,14 +591,14 @@ impl Board {
         };
 
         let castle_move = |side: isize, terminal_king: Position, terminal_rook: Position| {
-            self.positions_by_delta(player.other(), initial, side, 0)
+            self.positions_by_delta(player.other(), initial.moved_by(side, 0).unwrap(), side, 0)
                 .find(|&p| self.piece_at(p) == Some(Rook(player)))
                 .map(|initial_rook| Move {
                     piece: King(player),
                     initial,
                     terminal: terminal_king,
+                    take: None,
                     action: Some(Action::Castle {
-                        player,
                         initial: initial_rook,
                         terminal: terminal_rook,
                     }),
@@ -631,11 +637,8 @@ impl Board {
             .chain(self.try_delta_from_position(player, initial, -1, 1))
             .chain(self.try_delta_from_position(player, initial, 0, 1))
             .chain(self.try_delta_from_position(player, initial, 1, 1))
-            .map(move |terminal| Move {
-                piece: King(player),
-                initial,
-                terminal,
-                action: None,
+            .map(move |terminal| {
+                Move::new(King(player), initial, terminal).with_take(self.piece_at(terminal))
             })
             .chain(castle_queenside)
             .chain(castle_kingside)
@@ -648,12 +651,8 @@ impl Board {
         initial: Position,
     ) -> impl Iterator<Item = Move> + 'a {
         use Piece::*;
-        let to_move = move |terminal| Move {
-            piece,
-            initial,
-            terminal,
-            action: None,
-        };
+        let to_move =
+            move |terminal| Move::new(piece, initial, terminal).with_take(self.piece_at(terminal));
         match piece {
             Pawn(_) => Box::new(self.pseudo_legal_pawn_moves(player, initial))
                 as Box<dyn Iterator<Item = Move>>,
@@ -749,18 +748,20 @@ impl Board {
             || self.white_knight.count_zeros() >= 3
     }
 
-    // fn set_status(&mut self) {
-    //     if b.halfmove_clock == 50 {
-    //         b.status = Status::FiftyMoveRule;
-    //     } else if !self.sufficient_material() {
-    //         b.status = Status::InsufficientMaterial;
-    //     } else if self.moves().next().is_none() {
-    //         match b.is_in_check(b.turn) {
-    //             false => b.status = Status::Stalemate,
-    //             true => b.status = Status::Checkmate,
-    //         }
-    //     }
-    // }
+    fn status(&self) -> Status {
+        if self.halfmove_clock == 50 {
+            Status::FiftyMoveRule
+        } else if !self.sufficient_material() {
+            Status::InsufficientMaterial
+        } else if self.moves().next().is_none() {
+            match self.is_in_check(self.turn) {
+                false => Status::Stalemate,
+                true => Status::Checkmate,
+            }
+        } else {
+            Status::Ongoing
+        }
+    }
 
     fn clear(&mut self, piece: Piece, p: Position) {
         *self.bitboard(piece) &= !p.to_one_hot();
@@ -771,29 +772,25 @@ impl Board {
     }
 
     fn try_pseudo_legal_move(&self, m: Move) -> Option<Board> {
-        if self.status != Status::Ongoing {
-            panic!();
-        }
-
         let mut b = *self;
         b.en_passant = None;
         b.clear(m.piece, m.initial);
         b.set(m.piece, m.terminal);
 
+        if let Some(taken) = m.take {
+            b.clear(taken, m.terminal);
+        }
+
         if let Some(action) = m.action {
             use Action::*;
             match action {
-                Take(taken, p) => b.clear(taken, p),
-                Castle {
-                    player,
-                    initial,
-                    terminal,
-                } => {
-                    let rook = Piece::Rook(player);
+                Castle { initial, terminal } => {
+                    let rook = Piece::Rook(self.turn);
                     b.clear(rook, initial);
                     b.set(rook, terminal);
                 }
                 DoubleStep(en_passant) => b.en_passant = Some(en_passant),
+                EnPassant(p_taken) => b.clear(Pawn(self.turn.other()), p_taken),
                 Promote(piece) => {
                     b.clear(m.piece, m.terminal);
                     b.set(piece, m.terminal);
@@ -836,12 +833,7 @@ impl Board {
 
         let is_pawn = m.piece == Pawn(Black) || m.piece == Pawn(White);
 
-        let is_take = match m.action {
-            Some(Action::Take(..)) => true,
-            _ => false,
-        };
-
-        if is_pawn || is_take {
+        if is_pawn || m.take.is_some() {
             b.halfmove_clock = 0;
         } else {
             b.halfmove_clock += 1;
@@ -914,5 +906,21 @@ mod tests {
             .unwrap()
             .find_board("4k3/8/8/8/Pp6/8/8/4K3 b - a3 0 1")
             .find_board("4k3/8/8/8/8/p7/8/4K3 w - - 0 2");
+    }
+
+    #[test]
+    fn castling_queenside() {
+        Board::from_fen("r3k3/8/8/8/8/8/8/R3K3 w Qq - 0 1")
+            .unwrap()
+            .find_board("r3k3/8/8/8/8/8/8/2KR4 b q - 1 1")
+            .find_board("2kr4/8/8/8/8/8/8/2KR4 w - - 2 2");
+    }
+
+    #[test]
+    fn castling_kingside() {
+        Board::from_fen("4k2r/8/8/8/8/8/8/4K2R w Kk - 0 1")
+            .unwrap()
+            .find_board("4k2r/8/8/8/8/8/8/5RK1 b k - 1 1")
+            .find_board("5rk1/8/8/8/8/8/8/5RK1 w - - 2 2");
     }
 }
