@@ -1,7 +1,9 @@
+use std::hash::Hash;
+
 use crate::position::Position;
 
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum Player {
+#[derive(Clone, Copy, PartialEq, Hash, Debug)]
+pub enum Player {
     Black,
     White,
 }
@@ -84,7 +86,7 @@ impl Piece {
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
-struct Move {
+pub struct Move {
     piece: Piece,
     initial: Position,
     terminal: Position,
@@ -125,8 +127,8 @@ enum Action {
     Promote(Piece),
 }
 
-#[derive(Clone, Copy, PartialEq)]
-enum Status {
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Status {
     Ongoing,
     Checkmate,
     Stalemate,
@@ -148,7 +150,7 @@ pub struct Board {
     white_queen: u64,
     black_king: u64,
     white_king: u64,
-    turn: Player,
+    pub turn: Player,
     black_castle_kingside: bool,
     white_castle_kingside: bool,
     black_castle_queenside: bool,
@@ -185,6 +187,30 @@ impl Default for Board {
     }
 }
 
+impl Hash for Board {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.black_pawn.hash(state);
+        self.black_pawn.hash(state);
+        self.white_pawn.hash(state);
+        self.black_knight.hash(state);
+        self.white_knight.hash(state);
+        self.black_bishop.hash(state);
+        self.white_bishop.hash(state);
+        self.black_rook.hash(state);
+        self.white_rook.hash(state);
+        self.black_queen.hash(state);
+        self.white_queen.hash(state);
+        self.black_king.hash(state);
+        self.white_king.hash(state);
+        self.turn.hash(state);
+        self.black_castle_kingside.hash(state);
+        self.white_castle_kingside.hash(state);
+        self.black_castle_queenside.hash(state);
+        self.white_castle_queenside.hash(state);
+        self.en_passant.hash(state);
+    }
+}
+
 impl std::fmt::Debug for Board {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.to_fen())
@@ -194,7 +220,7 @@ impl std::fmt::Debug for Board {
 impl std::fmt::Display for Board {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for rank in (0..8).rev() {
-            write!(f, "{} ", rank)?;
+            write!(f, "{} ", rank + 1)?;
             for file in 0..8 {
                 if let Some(piece) = self.piece_at(Position::from_file_rank(file, rank).unwrap()) {
                     write!(f, "{} ", piece)?;
@@ -375,7 +401,7 @@ impl Board {
         }
     }
 
-    fn to_fen(&self) -> String {
+    pub fn to_fen(&self) -> String {
         let mut fen = String::with_capacity(87);
         for rank in (0..8).rev() {
             let mut consecutive_empty = 0u32;
@@ -445,12 +471,6 @@ impl Board {
         delta_file: isize,
         delta_rank: isize,
     ) -> Option<Position> {
-        if self
-            .piece_at(p)
-            .is_some_and(|piece| piece.player() == player.other())
-        {
-            return None;
-        }
         let p = p.moved_by(delta_file, delta_rank)?;
         if self
             .piece_at(p)
@@ -468,8 +488,24 @@ impl Board {
         delta_file: isize,
         delta_rank: isize,
     ) -> impl Iterator<Item = Position> + 'a {
+        let mut collided = false;
         std::iter::from_fn(move || {
-            p = self.try_delta_from_position(player, p, delta_file, delta_rank)?;
+            if collided {
+                return None;
+            }
+            p = p.moved_by(delta_file, delta_rank)?;
+            if self
+                .piece_at(p)
+                .is_some_and(|piece| piece.player() == player)
+            {
+                return None;
+            }
+            if self
+                .piece_at(p)
+                .is_some_and(|piece| piece.player() == player.other())
+            {
+                collided = true;
+            }
             Some(p)
         })
     }
@@ -656,7 +692,7 @@ impl Board {
         };
 
         let castle_move = |side: isize, terminal_king: Position, terminal_rook: Position| {
-            self.positions_by_delta(player.other(), initial.moved_by(side, 0).unwrap(), side, 0)
+            self.positions_by_delta(player.other(), initial, side, 0)
                 .find(|&p| self.piece_at(p) == Some(Rook(player)))
                 .map(|initial_rook| Move {
                     piece: King(player),
@@ -735,7 +771,7 @@ impl Board {
 
     fn is_in_check(&self, player: Player) -> bool {
         use Piece::*;
-        let king = Position::from_one_hot(match player {
+        let p_king = Position::from_one_hot(match player {
             Player::Black => self.black_king,
             Player::White => self.white_king,
         })
@@ -744,18 +780,28 @@ impl Board {
             Player::Black => -1,
             Player::White => 1,
         };
-        self.try_delta_from_position(player, king, -1, forward)
+        self.try_delta_from_position(player, p_king, -1, forward)
+            .filter(|&p| match self.piece_at(p) {
+                Some(Pawn(_)) => true,
+                _ => false,
+            })
             .into_iter()
-            .chain(self.try_delta_from_position(player, king, -1, forward))
             .chain(
-                self.knight_pattern(player, king)
+                self.try_delta_from_position(player, p_king, 1, forward)
+                    .filter(|&p| match self.piece_at(p) {
+                        Some(Pawn(_)) => true,
+                        _ => false,
+                    }),
+            )
+            .chain(
+                self.knight_pattern(player, p_king)
                     .filter(|&p| match self.piece_at(p) {
                         Some(Knight(_)) => true,
                         _ => false,
                     }),
             )
             .chain(
-                self.bishop_pattern(player, king)
+                self.bishop_pattern(player, p_king)
                     .filter(|&p| match self.piece_at(p) {
                         Some(Bishop(_)) => true,
                         Some(Queen(_)) => true,
@@ -763,7 +809,7 @@ impl Board {
                     }),
             )
             .chain(
-                self.rook_pattern(player, king)
+                self.rook_pattern(player, p_king)
                     .filter(|&p| match self.piece_at(p) {
                         Some(Rook(_)) => true,
                         Some(Queen(_)) => true,
@@ -771,7 +817,7 @@ impl Board {
                     }),
             )
             .chain(
-                self.king_pattern(player, king)
+                self.king_pattern(player, p_king)
                     .filter(|&p| match self.piece_at(p) {
                         Some(King(_)) => true,
                         _ => false,
@@ -813,7 +859,7 @@ impl Board {
             || self.white_knight.count_zeros() >= 3
     }
 
-    fn status(&self) -> Status {
+    pub fn status(&self) -> Status {
         if self.halfmove_clock == 50 {
             Status::FiftyMoveRule
         } else if !self.sufficient_material() {
@@ -863,7 +909,7 @@ impl Board {
             }
         }
 
-        if self.is_in_check(self.turn) {
+        if b.is_in_check(self.turn) {
             return None;
         }
 
@@ -913,7 +959,7 @@ impl Board {
         Some(b)
     }
 
-    fn moves<'a>(&'a self) -> impl Iterator<Item = (Move, Board)> + 'a {
+    pub fn moves<'a>(&'a self) -> impl Iterator<Item = (Move, Board)> + 'a {
         (0..64)
             .into_iter()
             .filter_map(|i| {
@@ -953,7 +999,13 @@ mod tests {
 
     #[test]
     fn twenty_moves_from_default() {
-        assert_eq!(&20, &Board::default().moves().count())
+        assert_eq!(
+            &20,
+            &Board::default()
+                .moves()
+                .inspect(|(m, b)| println!("{:?}", (m, b)))
+                .count()
+        );
     }
 
     impl Board {
@@ -987,5 +1039,29 @@ mod tests {
             .unwrap()
             .find_board("4k2r/8/8/8/8/8/8/5RK1 b k - 1 1")
             .find_board("5rk1/8/8/8/8/8/8/5RK1 w - - 2 2");
+    }
+
+    #[test]
+    fn in_check() {
+        let assert_white_is_in_check = |fen: &str| {
+            assert!(Board::from_fen(fen).unwrap().is_in_check(Player::White));
+        };
+        assert_white_is_in_check("4k3/8/8/8/8/8/3p4/4K3 w - - 0 1");
+        assert_white_is_in_check("4k3/8/8/8/8/3n4/8/4K3 w - - 0 1");
+        assert_white_is_in_check("4k3/8/8/8/1b6/8/8/4K3 w - - 0 1");
+        assert_white_is_in_check("4k3/8/8/8/8/8/8/r3K3 w - - 0 1");
+        assert_white_is_in_check("4k3/8/8/8/7q/8/8/4K3 w - - 0 1");
+    }
+
+    #[test]
+    fn checkmate() {
+        let b = Board::from_fen("8/8/8/8/8/4k3/8/r3K3 w - - 0 1").unwrap();
+        assert_eq!(Status::Checkmate, b.status())
+    }
+
+    #[test]
+    fn stalemate() {
+        let b = Board::from_fen("8/8/8/8/8/4k3/4p3/4K3 w - - 0 1").unwrap();
+        assert_eq!(Status::Stalemate, b.status())
     }
 }

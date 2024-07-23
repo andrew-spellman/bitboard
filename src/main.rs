@@ -1,5 +1,5 @@
 mod board;
-mod game_tree;
+mod game;
 mod position;
 
 fn main() {
