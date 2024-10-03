@@ -26,6 +26,7 @@ pub fn play_out_random_games(b: Board, count_games: usize) -> f32 {
         win_count += loop {
             if let Some(b_rng) = b.moves().choose(&mut rng).map(|(_, b)| b) {
                 b = b_rng;
+                println!("{}\n\n", b);
             }
             match b.status() {
                 Status::Ongoing => (),
@@ -41,15 +42,4 @@ pub fn play_out_random_games(b: Board, count_games: usize) -> f32 {
         }
     }
     win_count as f32 / count_games as f32
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fuck() {
-        println!("{}", play_out_random_games(Board::default(), 100));
-        panic!()
-    }
 }
