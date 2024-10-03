@@ -989,12 +989,8 @@ mod tests {
 
     #[test]
     fn from_to_fen() {
-        assert_eq!(
-            &Board::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
-                .unwrap()
-                .to_fen(),
-            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
-        )
+        let fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+        assert_eq!(&Board::from_fen(fen).unwrap().to_fen(), fen)
     }
 
     #[test]
